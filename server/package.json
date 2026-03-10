@@ -1,0 +1,28 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "start": "bun index.ts",
+    "api": "bun api.ts"
+  },
+  "dependencies": {
+    "@elysiajs/cors": "^1.4.1",
+    "dotenv": "^17.3.1",
+    "elysia": "^1.4.27",
+    "mongoose": "^9.3.0",
+    "playwright": "^1.58.2",
+    "redis": "^5.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "module": "index.ts"
+}
