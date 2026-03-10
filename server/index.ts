@@ -2,31 +2,36 @@
 import 'dotenv/config'
 import { chromium, type Browser, type Page } from 'playwright'
 import { ScrapedJob, JobConnector } from './types'
-import { log } from './utils'
+import { connectDB, disconnectDB } from './db'
+import { Post } from './models/Post'
+import {
+    trackNewPost, pruneOldPosts, disconnectRedis,
+    setScrapingProgress, clearScrapingProgress,
+} from './redis'
+import datapizza from './connectors/datapizza'
+import {
+    log, stripProcessors, applyProcessors,
+    remapKeys, isValidJob, logCard
+} from './utils'
 
-function stripProcessors(cardSelectors: JobConnector['selector']['card']) {
-    return Object.fromEntries(
-        Object.entries(cardSelectors).map(([key, val]) => [
-            key,
-            val ? { ...val, processor: undefined } : val
-        ])
-    )
+// CLI args
+const args     = process.argv.slice(2)
+const LONG     = args.includes('--long')
+const maxIdx   = args.indexOf('--max')
+const cronIdx  = args.indexOf('--cron')
+const MAX      = maxIdx  !== -1 ? parseInt(args[maxIdx  + 1], 10) : Infinity
+const CRON_MIN = cronIdx !== -1 ? parseInt(args[cronIdx + 1], 10) : null
+
+if (maxIdx !== -1 && (isNaN(MAX) || MAX <= 0)) {
+    console.error('❌ --max requires a positive integer, e.g. --max 10')
+    process.exit(1)
+}
+if (cronIdx !== -1 && (CRON_MIN === null || isNaN(CRON_MIN) || CRON_MIN <= 0)) {
+    console.error('❌ --cron requires a positive integer (minutes), e.g. --cron 30')
+    process.exit(1)
 }
 
-function applyProcessors(
-    raw: Record<string, any>,
-    cardSelectors: JobConnector['selector']['card']
-): Record<string, any> {
-    for (const [key, val] of Object.entries(cardSelectors)) {
-        if (val?.processor && raw[key] != null) raw[key] = val.processor(raw[key])
-    }
-    return raw
-}
-
-function remapKeys(raw: Record<string, any>): Record<string, any> {
-    const { _from, ...rest } = raw
-    return { connector_id: _from, ...rest }
-}
+const connectors = [datapizza]
 
 async function scrapeCard(
     page: Page,
@@ -43,7 +48,7 @@ async function scrapeCard(
     if (!card)
         throw new Error(`Card at index ${index} not found (got ${cards.length}), selector: ${cardSelector}`)
 
-    const listingUrl = page.url()
+    const listingUrl            = page.url()
     const serializableSelectors = stripProcessors(cardSelectors)
 
     if (cardSelectors.actionBtn) {
@@ -135,6 +140,7 @@ async function scrapeCard(
 async function persistJob(job: ScrapedJob): Promise<'inserted' | 'duplicate'> {
     try {
         const doc = await Post.create(job)
+        await trackNewPost(doc._id.toString())
         return 'inserted'
     } catch (err: any) {
         if (err?.code === 11000) return 'duplicate'
@@ -144,6 +150,8 @@ async function persistJob(job: ScrapedJob): Promise<'inserted' | 'duplicate'> {
 
 async function runOnce(runLabel: string): Promise<void> {
     log('success', `Scraping Execution started. ${runLabel}`)
+
+    await pruneOldPosts()
 
     const browser: Browser = await chromium.launch({
         headless: true,
@@ -164,6 +172,91 @@ async function runOnce(runLabel: string): Promise<void> {
             if (connector.opts.handleCookies) {
                 await connector.opts.handleCookies(page)
                 await page.waitForLoadState('networkidle')
+            }
+
+            const navigates    = !!connector.opts.goBackAfterScrapeComplete
+            let hasNext        = true
+            let pageNum        = 1
+            let totalScraped   = 0
+            let totalDiscarded = 0
+            let totalDupes     = 0
+            let connectorDone  = false
+
+            // Resolve total pages + first-page card count for progress
+            // Both must be read from the pristine first page (after cookies,
+            // before any card click), so they live here outside the loop.
+            await page.waitForSelector(connector.selector.list)
+            const firstPageCards = await page.$$(connector.selector.list)
+            const firstPageCardCount = firstPageCards.length
+
+            const totalPages = connector.selector.next.maxPages
+                ? await connector.selector.next.maxPages(page)
+                : null
+
+            if (totalPages !== null)
+                log('info', `Total pages: ${totalPages}`)
+
+            // --max takes unconditional priority as the fixed denominator.
+            // Falls back to page-count estimate, or null when both are unknown.
+            let totalEstimatedCards: number | null =
+                MAX !== Infinity
+                    ? MAX
+                    : totalPages !== null ? totalPages * firstPageCardCount : null
+
+            // Running count of cards fully processed on previous pages.
+            let totalCardsProcessed = 0
+
+            // Set initial progress
+            await setScrapingProgress({
+                connector_id: connector.name,
+                value:   totalEstimatedCards !== null ? 0 : null,
+                current: 0,
+                max:     totalEstimatedCards,
+            })
+
+            while (hasNext && !connectorDone) {
+                await page.waitForSelector(connector.selector.list)
+                const cardCount = (await page.$$(connector.selector.list)).length
+                const remaining = MAX - totalScraped
+                const limit     = Math.min(cardCount, remaining)
+
+                // Re-tune estimate at start of every page
+                // Only when --max is not set: replace the dummy future-page slot
+                // with the real card count for this page.
+                // When --max IS set, totalEstimatedCards is already fixed to MAX.
+                if (MAX === Infinity && totalPages !== null) {
+                    const pagesRemaining      = totalPages - pageNum
+                    totalEstimatedCards       = totalCardsProcessed
+                                             + cardCount
+                                             + pagesRemaining * firstPageCardCount
+                }
+
+                log('info', `Page ${pageNum}, scraping ${limit} cards`)
+
+                for (let i = 0; i < limit; i++) {
+                    const raw = await scrapeCard(
+                        page,
+                        connector.selector.list,
+                        i,
+                        cardCount,
+                        connector.selector.card,
+                        connector.name,
+                        navigates
+                    )
+
+                    // Update progress in Redis
+                    {
+                        const done = totalCardsProcessed + i + 1
+                        const pct  = totalEstimatedCards !== null
+                            ? Math.min(100, Math.round((done / totalEstimatedCards) * 100))
+                            : null
+                        await setScrapingProgress({
+                            connector_id: connector.name,
+                            value:   pct,
+                            current: totalScraped,
+                            max:     totalEstimatedCards,
+                        })
+                    }
 
                     const valid = isValidJob(raw, connector.selector.card)
 
