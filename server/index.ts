@@ -9,6 +9,7 @@ import {
     setScrapingProgress, clearScrapingProgress,
 } from './redis'
 import datapizza from './connectors/datapizza'
+import reteInformatica from './connectors/reteinformatica'
 import {
     log, stripProcessors, applyProcessors,
     remapKeys, isValidJob, logCard
@@ -31,7 +32,7 @@ if (cronIdx !== -1 && (CRON_MIN === null || isNaN(CRON_MIN) || CRON_MIN <= 0)) {
     process.exit(1)
 }
 
-const connectors = [datapizza]
+const connectors = [datapizza, reteInformatica]
 
 async function scrapeCard(
     page: Page,
