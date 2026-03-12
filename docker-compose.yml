@@ -1,0 +1,88 @@
+version: '3.9'
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: job-pulse-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+    ports:
+      - '27017:27017'
+    volumes:
+      - ${DOCKER_VOLUMES_PATH}/job-pulse-mongo:/data/db
+    networks:
+      - job-pulse-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: job-pulse-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    ports:
+      - '6379:6379'
+    volumes:
+      - ${DOCKER_VOLUMES_PATH}/job-pulse-redis:/data
+    networks:
+      - job-pulse-net
+
+  mongo-express:
+    image: mongo-express:1
+    container_name: job-pulse-mongo-express
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USER}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASS}
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_BASICAUTH_USERNAME: ${ME_USER}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${ME_PASS}
+    ports:
+      - '8081:8081'
+    networks:
+      - job-pulse-net
+
+  server:
+    build:
+      context: ./server        # cartella contenente Dockerfile server
+      dockerfile: Dockerfile
+    container_name: job-pulse-server
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - redis
+    ports:
+      - '3001:3001'
+    # Le variabili qui sotto sovrascrivono i valori di .env copiato da .env.example:
+    # all'interno della rete Docker i servizi si raggiungono tramite nome del container,
+    # NON tramite localhost.
+    environment:
+      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASS}@mongo:27017/${MONGO_DB}?authSource=admin
+      REDIS_URL: redis://redis:6379
+    networks:
+      - job-pulse-net
+
+  client:
+    build:
+      context: ./client        # cartella contenente Dockerfile client
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_API_URL viene "baked" dentro il bundle durante il build.
+      # Dal browser l'utente raggiunge l'API sul localhost dell'host, porta 3001.
+      # Se il frontend è esposto su un dominio pubblico, cambia questo valore.
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+    container_name: job-pulse-client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - '3000:3000'
+    networks:
+      - job-pulse-net
+
+networks:
+  job-pulse-net:
+    driver: bridge
