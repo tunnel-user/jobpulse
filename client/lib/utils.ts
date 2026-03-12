@@ -1,4 +1,4 @@
-import type { ConnPalette } from "./types"
+import type { SpinnerProps, ConnPalette } from "./types"
 import ms from 'ms'
 
 export const API    = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
@@ -10,6 +10,36 @@ export const Connector = {
 } as const
 
 export type ConnectorId = typeof Connector[keyof typeof Connector]
+
+/**
+ * Generates the geometry and style properties for an SVG spinner.
+ * @param {Partial<SpinnerProps>} [customProps] - Configuration to override default spinner dimensions and colors.
+ * @returns {SpinnerProps} A complete set of properties for rendering the spinner.
+ */export function generateSpinner(customProps?: Partial<SpinnerProps>): SpinnerProps {
+    const radius = customProps?.radius ?? 13
+    const strokeWidth = customProps?.strokeWidth ?? 2
+    const size = customProps?.size ?? 40 
+    
+    const circumference = 2 * Math.PI * radius
+    const centerPoint = size / 2
+    
+    const isDeterminate = customProps?.isDeterminate ?? false
+    const progress = Math.min(100, Math.max(0, customProps?.progress ?? 0))
+    const offset = circumference - (circumference * progress) / 100
+    
+    return {
+        radius,
+        strokeWidth,
+        size,
+        centerPoint,
+        circumference,
+        color: customProps?.color ?? 'rgba(255,255,255,0.85)',
+        trackColor: customProps?.trackColor ?? 'rgba(255,255,255,0.08)',
+        isDeterminate,
+        progress,
+        offset
+    }
+}
 
 const CONNECTOR_COLOR: Record<ConnectorId, string> = {
     [Connector.DATAPIZZA]:       '124,106,255',

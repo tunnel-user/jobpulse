@@ -1,4 +1,5 @@
 import { fetchPosts, fetchConnectors } from '@/lib/api'
+import PostsGrid from '@/components/PostsGrid'
 
 export const dynamic   = 'force-dynamic'
 export const revalidate = 0
@@ -24,6 +25,7 @@ export default async function Home() {
             </header>
 
             <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12">
+                <PostsGrid initialPosts={posts} connectors={connectors} />
             </div>
         </main>
     )
